@@ -1,1010 +1,1004 @@
-
 --[[
-    BABA HUB V2 | MM2
+    BABA HUB V3 | MM2
     By LLaliLLama_2 (AliBaba)
 
-    Features:
-    - FPS, ping, clock and session timer
-    - Draggable HUD
-    - Player highlights and tool-based role estimates
-    - Player names and distance labels
-    - WalkSpeed and jump controls
-    - FOV and camera zoom
-    - Lighting presets
-    - Low graphics mode
-    - Reset and cleanup
+    Single-file Rayfield Gen2 utility hub.
+    Features: live FPS/ping HUD, ESP, player teleport, Shift-click
+    teleport, camera/movement tools, local graphics, session info,
+    client audio player with searchable library/favorites, dance IDs,
+    and server hopping.
+
+    Audio/animations must be accessible Roblox asset IDs.
+    Movement, local visuals, and teleport behavior depend on game rules.
+    Some games may override them.
 ]]
 
--- SERVICES
+-- SERVICES + SAFE RELOAD
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local Stats = game:GetService("Stats")
-local Lighting = game:GetService("Lighting")
 local UserInputService = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local SoundService = game:GetService("SoundService")
+local Lighting = game:GetService("Lighting")
+local Stats = game:GetService("Stats")
 
 local LocalPlayer = Players.LocalPlayer
-
--- Prevent duplicate instances
-if getgenv().BabaHubCleanup then
-    pcall(getgenv().BabaHubCleanup)
+if not LocalPlayer then return end
+local Shared = (type(getgenv) == "function" and getgenv()) or _G
+if type(Shared.BabaHubV3Unload) == "function" then
+    pcall(Shared.BabaHubV3Unload)
 end
 
-local Rayfield = loadstring(
-    game:HttpGet("https://sirius.menu/gen2")
-)()
-
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 local Window = Rayfield:CreateWindow({
-    name = "Baba Hub V2 | MM2",
+    name = "Baba Hub V3 | MM2",
     subtitle = "By LLaliLLama_2",
     sidebarLayout = true,
 })
 
--- CONFIG
-local Config = {
-    ESP = false,
-    ESPNames = true,
-    ESPDistance = true,
-    ESPTransparency = 0.5,
-
-    WalkSpeed = 16,
-    JumpPower = 50,
-
-    FPS = true,
-    Ping = false,
-    Clock = false,
-    Session = false,
-
-    FOV = 70,
-    Zoom = 20,
-    LowGraphics = false,
-}
-
-local Running = true
-local StartedAt = os.clock()
-
+local Alive = true
 local Connections = {}
 local Highlights = {}
-local Labels = {}
-local SavedGraphics = {}
-local SavedLighting = {
-    Brightness = Lighting.Brightness,
-    ClockTime = Lighting.ClockTime,
-    Ambient = Lighting.Ambient,
-    OutdoorAmbient = Lighting.OutdoorAmbient,
-    FogEnd = Lighting.FogEnd,
-    GlobalShadows = Lighting.GlobalShadows,
+local Nametags = {}
+local StartedAt = os.clock()
+local Settings = {
+    esp = false, espNames = true, espDistance = true, espAlpha = 0.55,
+    fps = true, ping = false, clock = false, timer = false,
+    speed = 16, jump = 50, fov = 70, zoom = 20,
+    shiftClick = false, lowGraphics = false,
+    volume = 0.5, loop = false, autoNext = true, danceSpeed = 1,
+    danceLoop = true,
 }
-
 local Original = {
-    WalkSpeed = 16,
-    JumpPower = 50,
-    FOV = workspace.CurrentCamera
-        and workspace.CurrentCamera.FieldOfView or 70,
-    Zoom = LocalPlayer.CameraMaxZoomDistance,
-    CameraMode = LocalPlayer.CameraMode,
+    zoom = LocalPlayer.CameraMaxZoomDistance,
+    cameraMode = LocalPlayer.CameraMode,
+    fov = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or 70,
+    lighting = {
+        Brightness = Lighting.Brightness,
+        ClockTime = Lighting.ClockTime,
+        Ambient = Lighting.Ambient,
+        OutdoorAmbient = Lighting.OutdoorAmbient,
+        FogEnd = Lighting.FogEnd,
+        GlobalShadows = Lighting.GlobalShadows,
+    }
 }
-
-local Colors = {
-    Murderer = Color3.fromRGB(255, 65, 65),
-    Sheriff = Color3.fromRGB(60, 140, 255),
-    Unknown = Color3.fromRGB(65, 255, 125),
-}
-
--- HELPERS
-local function Track(Connection)
-    table.insert(Connections, Connection)
-    return Connection
-end
-
-local function Notify(Title, Message)
-    Window:Notify({
-        title = Title,
-        content = Message,
-        duration = 4,
-    })
-end
-
-local function Humanoid()
-    local Character = LocalPlayer.Character
-    return Character and
-        Character:FindFirstChildOfClass("Humanoid")
-end
-
-local function ApplyMovement()
-    local H = Humanoid()
-    if not H then return end
-
-    H.WalkSpeed = Config.WalkSpeed
-    H.UseJumpPower = true
-    H.JumpPower = Config.JumpPower
-end
-
-local function ApplyCamera()
-    local Camera = workspace.CurrentCamera
-    if Camera then
-        Camera.FieldOfView = Config.FOV
-    end
-
-    LocalPlayer.CameraMaxZoomDistance = Config.Zoom
-end
-
-local function FormatTime(Seconds)
-    Seconds = math.floor(Seconds)
-    return string.format(
-        "%02d:%02d",
-        math.floor(Seconds / 60),
-        Seconds % 60
-    )
-end
-
--- ROLE ESTIMATION
-local function GetRole(Player)
-    local function Check(Container)
-        if not Container then return nil end
-
-        for _, Item in ipairs(Container:GetChildren()) do
-            if Item:IsA("Tool") then
-                local Name = Item.Name:lower()
-
-                if Name:find("knife", 1, true) then
-                    return "Murderer"
-                elseif Name:find("gun", 1, true)
-                    or Name:find("revolver", 1, true) then
-                    return "Sheriff"
-                end
-            end
-        end
-
-        return nil
-    end
-
-    return Check(Player.Character)
-        or Check(Player:FindFirstChildOfClass("Backpack"))
-        or "Unknown"
-end
-
--- ESP
-local function RemoveESP(Player)
-    if Highlights[Player] then
-        Highlights[Player]:Destroy()
-        Highlights[Player] = nil
-    end
-
-    if Labels[Player] then
-        Labels[Player]:Destroy()
-        Labels[Player] = nil
-    end
-end
-
-local function UpdateESP(Player)
-    if Player == LocalPlayer then return end
-
-    local Character = Player.Character
-    local Root = Character and
-        Character:FindFirstChild("HumanoidRootPart")
-
-    if not Config.ESP or not Character or not Root then
-        RemoveESP(Player)
-        return
-    end
-
-    local Highlight = Highlights[Player]
-
-    if Highlight and Highlight.Adornee ~= Character then
-        RemoveESP(Player)
-        Highlight = nil
-    end
-
-    if not Highlight then
-        Highlight = Instance.new("Highlight")
-        Highlight.Name = "BabaHighlight"
-        Highlight.DepthMode =
-            Enum.HighlightDepthMode.AlwaysOnTop
-        Highlight.Adornee = Character
-        Highlight.Parent = Character
-        Highlights[Player] = Highlight
-    end
-
-    local Role = GetRole(Player)
-    local Color = Colors[Role] or Colors.Unknown
-
-    Highlight.FillColor = Color
-    Highlight.OutlineColor = Color
-    Highlight.FillTransparency = Config.ESPTransparency
-    Highlight.OutlineTransparency = 0
-
-    local Billboard = Labels[Player]
-
-    if Billboard and Billboard.Adornee ~= Root then
-        Billboard:Destroy()
-        Labels[Player] = nil
-        Billboard = nil
-    end
-
-    if not Billboard then
-        Billboard = Instance.new("BillboardGui")
-        Billboard.Name = "BabaPlayerLabel"
-        Billboard.Size = UDim2.fromOffset(220, 55)
-        Billboard.StudsOffset = Vector3.new(0, 3, 0)
-        Billboard.AlwaysOnTop = true
-        Billboard.Adornee = Root
-        Billboard.Parent = Root
-
-        local Text = Instance.new("TextLabel")
-        Text.Name = "Info"
-        Text.Size = UDim2.fromScale(1, 1)
-        Text.BackgroundTransparency = 1
-        Text.TextColor3 = Color3.new(1, 1, 1)
-        Text.TextStrokeTransparency = 0.25
-        Text.Font = Enum.Font.GothamBold
-        Text.TextSize = 13
-        Text.Parent = Billboard
-
-        Labels[Player] = Billboard
-    end
-
-    Billboard.Enabled =
-        Config.ESPNames or Config.ESPDistance
-
-    local Parts = {}
-
-    if Config.ESPNames then
-        table.insert(Parts, Player.DisplayName)
-        table.insert(Parts, "[" .. Role .. "?]")
-    end
-
-    if Config.ESPDistance then
-        local MyRoot = LocalPlayer.Character and
-            LocalPlayer.Character:FindFirstChild(
-                "HumanoidRootPart"
-            )
-
-        if MyRoot then
-            local Distance = (MyRoot.Position - Root.Position).Magnitude
-            table.insert(
-                Parts,
-                math.floor(Distance) .. " studs"
-            )
-        end
-    end
-
-    local Text = Billboard:FindFirstChild("Info")
-    if Text then
-        Text.Text = table.concat(Parts, "\n")
-        Text.TextColor3 = Color
-    end
-end
-
-local function RefreshESP()
-    for _, Player in ipairs(Players:GetPlayers()) do
-        UpdateESP(Player)
-    end
-end
-
-local function ClearESP()
-    for Player in pairs(Highlights) do
-        RemoveESP(Player)
-    end
-
-    for Player in pairs(Labels) do
-        RemoveESP(Player)
-    end
-end
-
--- DRAGGABLE HUD
-local GUI = Instance.new("ScreenGui")
-GUI.Name = "BabaHubHUD"
-GUI.ResetOnSpawn = false
-GUI.IgnoreGuiInset = true
-GUI.Parent = LocalPlayer:WaitForChild("PlayerGui")
-
-local HUD = Instance.new("Frame")
-HUD.Name = "StatsHUD"
-HUD.Size = UDim2.fromOffset(180, 120)
-HUD.Position = UDim2.new(1, -195, 0, 85)
-HUD.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
-HUD.BackgroundTransparency = 0.12
-HUD.BorderSizePixel = 0
-HUD.Active = true
-HUD.Parent = GUI
-
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(0, 10)
-Corner.Parent = HUD
-
-local Stroke = Instance.new("UIStroke")
-Stroke.Color = Color3.fromRGB(95, 105, 255)
-Stroke.Thickness = 1
-Stroke.Transparency = 0.3
-Stroke.Parent = HUD
-
-local Layout = Instance.new("UIListLayout")
-Layout.Padding = UDim.new(0, 3)
-Layout.HorizontalAlignment =
-    Enum.HorizontalAlignment.Center
-Layout.Parent = HUD
-
-local function NewHUDLabel(Name, Color)
-    local Label = Instance.new("TextLabel")
-    Label.Name = Name
-    Label.Size = UDim2.new(1, -12, 0, 21)
-    Label.BackgroundTransparency = 1
-    Label.Font = Enum.Font.GothamBold
-    Label.TextSize = 13
-    Label.TextColor3 = Color
-    Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Text = Name
-    Label.Parent = HUD
-    return Label
-end
-
-local Header = NewHUDLabel(
-    "  BABA HUB V2",
-    Color3.fromRGB(155, 165, 255)
-)
-
-local FPSLabel = NewHUDLabel(
-    "FPS: --",
-    Color3.fromRGB(100, 255, 150)
-)
-
-local PingLabel = NewHUDLabel(
-    "Ping: --",
-    Color3.fromRGB(255, 220, 100)
-)
-
-local ClockLabel = NewHUDLabel(
-    "Time: --",
-    Color3.fromRGB(200, 200, 255)
-)
-
-local SessionLabel = NewHUDLabel(
-    "Session: --",
-    Color3.fromRGB(200, 200, 255)
-)
-
--- DRAG HANDLING
-local Dragging = false
-local DragStart
-local StartPosition
-
-Track(HUD.InputBegan:Connect(function(Input)
-    if Input.UserInputType == Enum.UserInputType.MouseButton1
-        or Input.UserInputType == Enum.UserInputType.Touch then
-        Dragging = true
-        DragStart = Input.Position
-        StartPosition = HUD.Position
-    end
-end))
-
-Track(UserInputService.InputEnded:Connect(function(Input)
-    if Input.UserInputType == Enum.UserInputType.MouseButton1
-        or Input.UserInputType == Enum.UserInputType.Touch then
-        Dragging = false
-    end
-end))
-
-Track(UserInputService.InputChanged:Connect(function(Input)
-    if not Dragging then return end
-
-    if Input.UserInputType ~= Enum.UserInputType.MouseMovement
-        and Input.UserInputType ~= Enum.UserInputType.Touch then
-        return
-    end
-
-    local Delta = Input.Position - DragStart
-
-    HUD.Position = UDim2.new(
-        StartPosition.X.Scale,
-        StartPosition.X.Offset + Delta.X,
-        StartPosition.Y.Scale,
-        StartPosition.Y.Offset + Delta.Y
-    )
-end))
-
--- FPS TRACKING
-local FrameCount = 0
+Settings.fov = Original.fov
+local OriginalHumanoid = nil
+local MaterialBackup = {}
+local SelectedPlayerText = ""
 local FPS = 0
-local FrameElapsed = 0
-local UpdateElapsed = 0
-local ESPElapsed = 0
 
-local function UpdateHUD()
-    FPSLabel.Visible = Config.FPS
-    PingLabel.Visible = Config.Ping
-    ClockLabel.Visible = Config.Clock
-    SessionLabel.Visible = Config.Session
-
-    local Count = 0
-    for _, Enabled in ipairs({
-        Config.FPS,
-        Config.Ping,
-        Config.Clock,
-        Config.Session
-    }) do
-        if Enabled then
-            Count += 1
-        end
-    end
-
-    HUD.Visible = Count > 0
-    HUD.Size = UDim2.fromOffset(180, 30 + Count * 24)
-
-    FPSLabel.Text = "  FPS: " .. tostring(FPS)
-
-    local Ping = "--"
+local function Connect(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(Connections, c)
+    return c
+end
+local function Notify(title, content)
+    if not Alive then return end
     pcall(function()
-        Ping = Stats.Network.ServerStatsItem[
-            "Data Ping"
-        ]:GetValueString()
+        Window:Notify({title = tostring(title), content = tostring(content), duration = 4})
     end)
-
-    PingLabel.Text = "  Ping: " .. Ping
-    ClockLabel.Text = "  Time: " .. os.date("%H:%M:%S")
-    SessionLabel.Text = "  Session: " ..
-        FormatTime(os.clock() - StartedAt)
+end
+local function Humanoid()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+local function Root(player)
+    local char = player.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+local function Seconds(v)
+    v = math.floor(math.max(0, v))
+    return string.format("%02d:%02d", math.floor(v / 60), v % 60)
+end
+local function AssetID(str)
+    local s = tostring(str or "")
+    local id = s:match("^(%d+)$") or s:match("rbxassetid://(%d+)")
+    if id and #id <= 20 then return id end
+    return nil
+end
+local function ApplyMovement()
+    local h = Humanoid()
+    if h then
+        h.WalkSpeed = Settings.speed
+        h.UseJumpPower = true
+        h.JumpPower = Settings.jump
+    end
+end
+local function ApplyCamera()
+    if workspace.CurrentCamera then
+        workspace.CurrentCamera.FieldOfView = Settings.fov
+    end
+    LocalPlayer.CameraMaxZoomDistance = Settings.zoom
+end
+local function RestoreLighting()
+    for property, value in pairs(Original.lighting) do
+        pcall(function() Lighting[property] = value end)
+    end
 end
 
-Track(RunService.RenderStepped:Connect(function(Delta)
-    if not Running then return end
-
-    FrameCount += 1
-    FrameElapsed += Delta
-    UpdateElapsed += Delta
-    ESPElapsed += Delta
-
-    if FrameElapsed >= 0.5 then
-        FPS = math.floor(
-            FrameCount / FrameElapsed + 0.5
-        )
-        FrameCount = 0
-        FrameElapsed = 0
+-- PLAYER HIGHLIGHTS
+local ESPColor = Color3.fromRGB(154, 112, 255)
+local function RemoveESP(player)
+    if Highlights[player] then Highlights[player]:Destroy() end
+    if Nametags[player] then Nametags[player]:Destroy() end
+    Highlights[player], Nametags[player] = nil, nil
+end
+local function ClearESP()
+    for player in pairs(Highlights) do RemoveESP(player) end
+    for player in pairs(Nametags) do RemoveESP(player) end
+end
+local function UpdateESP(player)
+    if player == LocalPlayer then return end
+    local char, root = player.Character, Root(player)
+    if not Settings.esp or not char or not root then
+        RemoveESP(player)
+        return
     end
-
-    if UpdateElapsed >= 0.5 then
-        UpdateElapsed = 0
-        UpdateHUD()
+    local mark = Highlights[player]
+    if mark and mark.Adornee ~= char then
+        RemoveESP(player)
+        mark = nil
     end
+    if not mark then
+        mark = Instance.new("Highlight")
+        mark.Name = "BabaHubPlayerOutline"
+        mark.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        mark.Adornee = char
+        mark.Parent = char
+        Highlights[player] = mark
+    end
+    mark.FillColor = ESPColor
+    mark.OutlineColor = ESPColor
+    mark.FillTransparency = Settings.espAlpha
+    mark.OutlineTransparency = 0
 
-    if ESPElapsed >= 0.5 then
-        ESPElapsed = 0
-        if Config.ESP then
-            RefreshESP()
+    local tag = Nametags[player]
+    if tag and tag.Adornee ~= root then
+        tag:Destroy()
+        tag = nil
+    end
+    if not tag then
+        tag = Instance.new("BillboardGui")
+        tag.Name = "BabaHubNameTag"
+        tag.Adornee = root
+        tag.Size = UDim2.fromOffset(230, 48)
+        tag.StudsOffset = Vector3.new(0, 3.2, 0)
+        tag.AlwaysOnTop = true
+        tag.Parent = root
+        local label = Instance.new("TextLabel")
+        label.Name = "Text"
+        label.Size = UDim2.fromScale(1, 1)
+        label.BackgroundTransparency = 1
+        label.Font = Enum.Font.GothamBold
+        label.TextColor3 = ESPColor
+        label.TextStrokeTransparency = 0.2
+        label.TextSize = 13
+        label.Parent = tag
+        Nametags[player] = tag
+    end
+    tag.Enabled = Settings.espNames or Settings.espDistance
+    local chunks = {}
+    if Settings.espNames then table.insert(chunks, player.DisplayName) end
+    if Settings.espDistance then
+        local myRoot = Root(LocalPlayer)
+        if myRoot then
+            table.insert(chunks, tostring(math.floor((myRoot.Position - root.Position).Magnitude)) .. " studs")
         end
     end
-end))
+    local tagText = tag:FindFirstChild("Text")
+    if tagText then tagText.Text = table.concat(chunks, " | ") end
+end
+local function RefreshESP()
+    for _, p in ipairs(Players:GetPlayers()) do UpdateESP(p) end
+end
 
--- GRAPHICS
-local function SetLowGraphics(Enabled)
-    if Enabled then
-        table.clear(SavedGraphics)
+-- TELEPORT UTILITIES
+local function FindPlayer(query)
+    query = tostring(query or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if query == "" then return nil end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Name:lower() == query then return p end
+    end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Name:lower():sub(1, #query) == query then return p end
+    end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.DisplayName:lower():sub(1, #query) == query then return p end
+    end
+    return nil
+end
+local function TeleportNearPlayer(query)
+    local target = FindPlayer(query)
+    local mine = Root(LocalPlayer)
+    local theirs = target and Root(target)
+    if not mine or not theirs then
+        Notify("Teleport", "Player not found or character unavailable.")
+        return
+    end
+    mine.CFrame = theirs.CFrame * CFrame.new(3, 0, 3)
+    Notify("Teleport", "Moved near " .. target.Name)
+end
+local function TeleportAt(worldPos)
+    local mine = Root(LocalPlayer)
+    if not mine then return end
+    mine.CFrame = CFrame.new(worldPos + Vector3.new(0, 3, 0))
+end
 
-        for _, Object in ipairs(workspace:GetDescendants()) do
-            if Object:IsA("BasePart") then
-                SavedGraphics[Object] = {
-                    Material = Object.Material,
-                    Reflectance = Object.Reflectance,
-                }
+-- MUSIC LIBRARY (ROBLOX AUDIO ASSET IDS)
+local Music = Instance.new("Sound")
+Music.Name = "BabaHubClientMusic"
+Music.Volume = Settings.volume
+Music.Looped = Settings.loop
+Music.Parent = SoundService
 
-                Object.Material = Enum.Material.SmoothPlastic
-                Object.Reflectance = 0
+local Library = {}
+local CurrentSong = nil
+local AudioInput = ""
+local SongNameInput = ""
+local FilterFavorites = false
+local FileName = "BabaHubV3_music.json"
+local MusicListWindow = nil
+local SongRows = nil
+local MusicStatus = nil
+local LibraryStatus = nil
+
+local function SaveLibrary()
+    if type(writefile) ~= "function" then return end
+    local ok, json = pcall(function()
+        return HttpService:JSONEncode({songs = Library, volume = Settings.volume, loop = Settings.loop, autoNext = Settings.autoNext})
+    end)
+    if ok then pcall(writefile, FileName, json) end
+end
+local function LoadLibrary()
+    if type(readfile) ~= "function" or type(isfile) ~= "function" then return end
+    local exists, yes = pcall(isfile, FileName)
+    if not exists or not yes then return end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(readfile(FileName))
+    end)
+    if not ok or type(data) ~= "table" then return end
+    if type(data.songs) == "table" then
+        for _, entry in ipairs(data.songs) do
+            if type(entry) == "table" and AssetID(entry.id) and #Library < 200 then
+                table.insert(Library, {
+                    id = AssetID(entry.id),
+                    name = tostring(entry.name or entry.id):sub(1, 60),
+                    favorite = entry.favorite == true,
+                })
             end
         end
+    end
+    if type(data.volume) == "number" then
+        Settings.volume = math.clamp(data.volume, 0, 1)
+    end
+    if type(data.loop) == "boolean" then Settings.loop = data.loop end
+    if type(data.autoNext) == "boolean" then Settings.autoNext = data.autoNext end
+    Music.Volume = Settings.volume
+    Music.Looped = Settings.loop
+end
+LoadLibrary()
 
+local function MusicInfo()
+    local item = CurrentSong and Library[CurrentSong]
+    if not item then return "Nothing selected" end
+    return item.name .. " | " .. item.id .. (item.favorite and "  [FAV]" or "")
+end
+local function UpdateMusicInfo()
+    if MusicStatus then MusicStatus:Set(MusicInfo()) end
+    if LibraryStatus then LibraryStatus:Set(#Library .. " saved tracks") end
+end
+local function PlayIndex(index)
+    local item = Library[index]
+    if not item then
+        Notify("Music", "Select a song from your library first.")
+        return
+    end
+    CurrentSong = index
+    Music:Stop()
+    Music.SoundId = "rbxassetid://" .. item.id
+    Music.TimePosition = 0
+    Music:Play()
+    UpdateMusicInfo()
+end
+local function SongExists(id)
+    for i, song in ipairs(Library) do
+        if song.id == id then return i end
+    end
+    return nil
+end
+local function AddSong(id, name)
+    id = AssetID(id)
+    if not id then
+        Notify("Music", "Enter a numeric Roblox audio asset ID.")
+        return
+    end
+    local exists = SongExists(id)
+    if exists then
+        CurrentSong = exists
+        Notify("Library", "Song already saved; selected existing entry.")
+    else
+        if #Library >= 200 then
+            Notify("Library", "Library limit: 200 songs.")
+            return
+        end
+        table.insert(Library, {
+            id = id,
+            name = (tostring(name or ""):match("%S") and tostring(name):sub(1, 60)) or ("Audio " .. id),
+            favorite = false,
+        })
+        CurrentSong = #Library
+    end
+    SaveLibrary()
+    UpdateMusicInfo()
+end
+local function PlayAdjacent(direction)
+    if #Library == 0 then
+        Notify("Music", "Your library is empty.")
+        return
+    end
+    local nextIndex = ((CurrentSong or (direction == 1 and 0 or 1)) - 1 + direction) % #Library + 1
+    PlayIndex(nextIndex)
+end
+
+Connect(Music.Ended, function()
+    if Alive and Settings.autoNext and not Music.Looped and #Library > 0 then
+        PlayAdjacent(1)
+    end
+end)
+
+-- CUSTOM MUSIC LIBRARY BROWSER
+local function UI(class, fields, parent)
+    local obj = Instance.new(class)
+    for k, v in pairs(fields or {}) do obj[k] = v end
+    obj.Parent = parent
+    return obj
+end
+local ScreenGui = UI("ScreenGui", {
+    Name = "BabaHubV3Overlays", ResetOnSpawn = false,
+    IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, LocalPlayer:WaitForChild("PlayerGui"))
+
+local function MakeRounded(frame, radius)
+    UI("UICorner", {CornerRadius = UDim.new(0, radius or 10)}, frame)
+end
+local function RenderSongRows()
+    if not SongRows then return end
+    for _, child in ipairs(SongRows:GetChildren()) do
+        if child:IsA("GuiObject") then child:Destroy() end
+    end
+    local y = 0
+    for i, song in ipairs(Library) do
+        if not FilterFavorites or song.favorite then
+            local index = i
+            local label = (song.favorite and "★ " or "") .. song.name .. "  [" .. song.id .. "]"
+            local button = UI("TextButton", {
+                Name = "Track" .. i,
+                Size = UDim2.new(1, -8, 0, 36),
+                Position = UDim2.fromOffset(4, y),
+                BackgroundColor3 = i == CurrentSong and Color3.fromRGB(74, 48, 135) or Color3.fromRGB(35, 35, 52),
+                TextColor3 = Color3.fromRGB(240, 240, 250),
+                Font = Enum.Font.Gotham,
+                TextSize = 12,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                Text = "  " .. label,
+                TextXAlignment = Enum.TextXAlignment.Left,
+            }, SongRows)
+            MakeRounded(button, 7)
+            button.MouseButton1Click:Connect(function()
+                PlayIndex(index)
+                RenderSongRows()
+            end)
+            y = y + 40
+        end
+    end
+    SongRows.CanvasSize = UDim2.fromOffset(0, y)
+end
+local function ShowMusicLibrary()
+    if MusicListWindow then
+        MusicListWindow.Visible = not MusicListWindow.Visible
+        RenderSongRows()
+        return
+    end
+    local panel = UI("Frame", {
+        Name = "MusicLibrary", Size = UDim2.fromOffset(350, 375),
+        Position = UDim2.new(0.5, -175, 0.5, -187),
+        BackgroundColor3 = Color3.fromRGB(19, 19, 30),
+        Active = true, Visible = true,
+    }, ScreenGui)
+    MakeRounded(panel, 13)
+    UI("UIStroke", {Color = Color3.fromRGB(130, 85, 255), Thickness = 1.5}, panel)
+    UI("TextLabel", {
+        Size = UDim2.new(1, -55, 0, 46), Position = UDim2.fromOffset(14, 0),
+        BackgroundTransparency = 1, Text = "BABA HUB  •  MUSIC LIBRARY",
+        Font = Enum.Font.GothamBold, TextSize = 14,
+        TextColor3 = Color3.fromRGB(225, 210, 255), TextXAlignment = Enum.TextXAlignment.Left,
+    }, panel)
+    local close = UI("TextButton", {
+        Size = UDim2.fromOffset(32, 30), Position = UDim2.new(1, -43, 0, 8),
+        BackgroundColor3 = Color3.fromRGB(90, 50, 130),
+        Text = "X", Font = Enum.Font.GothamBold, TextSize = 14,
+        TextColor3 = Color3.new(1, 1, 1),
+    }, panel)
+    MakeRounded(close, 7)
+    Connect(close.MouseButton1Click, function() panel.Visible = false end)
+    SongRows = UI("ScrollingFrame", {
+        Name = "Tracks", Position = UDim2.fromOffset(12, 50),
+        Size = UDim2.new(1, -24, 1, -110),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        ScrollBarThickness = 4, CanvasSize = UDim2.fromOffset(0, 0),
+    }, panel)
+    local fav = UI("TextButton", {
+        Size = UDim2.new(0.5, -16, 0, 36), Position = UDim2.new(0, 12, 1, -46),
+        BackgroundColor3 = Color3.fromRGB(70, 42, 115),
+        Text = "Toggle Favorites", TextSize = 12,
+        Font = Enum.Font.GothamBold, TextColor3 = Color3.new(1, 1, 1),
+    }, panel)
+    MakeRounded(fav, 8)
+    Connect(fav.MouseButton1Click, function()
+        FilterFavorites = not FilterFavorites
+        fav.Text = FilterFavorites and "Showing Favorites" or "Toggle Favorites"
+        RenderSongRows()
+    end)
+    local favoriteCurrent = UI("TextButton", {
+        Size = UDim2.new(0.5, -16, 0, 36), Position = UDim2.new(0.5, 4, 1, -46),
+        BackgroundColor3 = Color3.fromRGB(70, 42, 115),
+        Text = "★ Favorite Selected", TextSize = 12,
+        Font = Enum.Font.GothamBold, TextColor3 = Color3.new(1, 1, 1),
+    }, panel)
+    MakeRounded(favoriteCurrent, 8)
+    Connect(favoriteCurrent.MouseButton1Click, function()
+        local item = CurrentSong and Library[CurrentSong]
+        if item then
+            item.favorite = not item.favorite
+            SaveLibrary()
+            RenderSongRows()
+            UpdateMusicInfo()
+        end
+    end)
+    -- Drag panel by title area
+    local dragging, dragInput, startInput, startPos = false, nil, nil, nil
+    Connect(panel.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if input.Position.Y <= panel.AbsolutePosition.Y + 44 then
+                dragging, startInput, startPos = true, input.Position, panel.Position
+                dragInput = input
+            end
+        end
+    end)
+    Connect(UserInputService.InputChanged, function(input)
+        if dragging and startInput and (input.UserInputType == Enum.UserInputType.MouseMovement or input == dragInput) then
+            local delta = input.Position - startInput
+            panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    Connect(UserInputService.InputEnded, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input == dragInput then
+            dragging, dragInput = false, nil
+        end
+    end)
+    MusicListWindow = panel
+    RenderSongRows()
+end
+
+-- HUD
+local HUD = UI("Frame", {
+    Name = "DraggableStatsHUD", Position = UDim2.new(1, -190, 0, 85),
+    Size = UDim2.fromOffset(175, 55), BackgroundColor3 = Color3.fromRGB(18, 18, 32),
+    BackgroundTransparency = 0.12, Active = true,
+}, ScreenGui)
+MakeRounded(HUD, 10)
+UI("UIStroke", {Color = Color3.fromRGB(120, 75, 230), Thickness = 1}, HUD)
+UI("TextLabel", {
+    Size = UDim2.new(1, -10, 0, 24), Position = UDim2.fromOffset(8, 3),
+    BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 13,
+    TextColor3 = Color3.fromRGB(190, 160, 255), TextXAlignment = Enum.TextXAlignment.Left,
+    Text = "BABA HUB V3",
+}, HUD)
+local HUDLines = {}
+for _, name in ipairs({"fps", "ping", "clock", "timer"}) do
+    HUDLines[name] = UI("TextLabel", {
+        Name = name, Size = UDim2.new(1, -14, 0, 21),
+        BackgroundTransparency = 1, TextColor3 = Color3.fromRGB(235, 235, 245),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Font = Enum.Font.GothamMedium, TextSize = 12,
+        Text = name .. ": --", Visible = false,
+    }, HUD)
+end
+local function UpdateHUD()
+    local count = 0
+    for _, name in ipairs({"fps", "ping", "clock", "timer"}) do
+        local label = HUDLines[name]
+        label.Visible = Settings[name]
+        if Settings[name] then
+            label.Position = UDim2.fromOffset(12, 27 + 21 * count)
+            count = count + 1
+        end
+    end
+    HUD.Visible = count > 0
+    HUD.Size = UDim2.fromOffset(175, 36 + 21 * count)
+    HUDLines.fps.Text = "FPS: " .. tostring(FPS)
+    if Settings.ping then
+        local ping = "N/A"
+        pcall(function() ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValueString() end)
+        HUDLines.ping.Text = "Ping: " .. ping
+    end
+    HUDLines.clock.Text = "Time: " .. os.date("%H:%M:%S")
+    HUDLines.timer.Text = "Session: " .. Seconds(os.clock() - StartedAt)
+end
+local HUDDrag, HUDStart, HUDPos, HUDInput = false, nil, nil, nil
+Connect(HUD.InputBegan, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        HUDDrag, HUDStart, HUDPos, HUDInput = true, input.Position, HUD.Position, input
+    end
+end)
+Connect(UserInputService.InputChanged, function(input)
+    if HUDDrag and HUDStart and (input.UserInputType == Enum.UserInputType.MouseMovement or input == HUDInput) then
+        local delta = input.Position - HUDStart
+        HUD.Position = UDim2.new(HUDPos.X.Scale, HUDPos.X.Offset + delta.X,
+            HUDPos.Y.Scale, HUDPos.Y.Offset + delta.Y)
+    end
+end)
+Connect(UserInputService.InputEnded, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input == HUDInput then
+        HUDDrag, HUDInput = false, nil
+    end
+end)
+
+-- LOW GRAPHICS (LOCAL MATERIALS)
+local function SetLowGraphics(enabled)
+    if enabled then
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and not MaterialBackup[obj] then
+                MaterialBackup[obj] = {obj.Material, obj.Reflectance}
+                obj.Material = Enum.Material.SmoothPlastic
+                obj.Reflectance = 0
+            end
+        end
         Lighting.GlobalShadows = false
     else
-        for Object, Values in pairs(SavedGraphics) do
-            if Object and Object.Parent then
-                Object.Material = Values.Material
-                Object.Reflectance = Values.Reflectance
+        for obj, old in pairs(MaterialBackup) do
+            if obj.Parent then
+                pcall(function()
+                    obj.Material, obj.Reflectance = old[1], old[2]
+                end)
             end
         end
-
-        table.clear(SavedGraphics)
-        Lighting.GlobalShadows =
-            SavedLighting.GlobalShadows
+        table.clear(MaterialBackup)
+        Lighting.GlobalShadows = Original.lighting.GlobalShadows
     end
 end
 
-local function RestoreLighting()
-    for Property, Value in pairs(SavedLighting) do
-        Lighting[Property] = Value
+-- DANCE SYSTEM
+local DanceInput = ""
+local DanceTrack = nil
+local DanceAnimation = nil
+local function StopDance()
+    if DanceTrack then
+        pcall(function() DanceTrack:Stop(0.15) end)
+        DanceTrack = nil
     end
+    if DanceAnimation then DanceAnimation:Destroy(); DanceAnimation = nil end
+end
+local function PlayDanceId(raw)
+    local id = AssetID(raw)
+    if not id then Notify("Dances", "Enter a numeric Roblox animation ID."); return end
+    local h = Humanoid()
+    local animator = h and h:FindFirstChildOfClass("Animator")
+    if not animator then Notify("Dances", "Character animator unavailable."); return end
+    StopDance()
+    local anim = Instance.new("Animation")
+    anim.AnimationId = "rbxassetid://" .. id
+    local ok, track = pcall(function() return animator:LoadAnimation(anim) end)
+    if ok and track then
+        DanceAnimation = anim
+        DanceTrack = track
+        track.Looped = Settings.danceLoop
+        track:Play(0.15, 1, Settings.danceSpeed)
+        Notify("Dances", "Animation requested: " .. id)
+    else
+        anim:Destroy()
+        Notify("Dances", "Animation couldn't be loaded or isn't accessible.")
+    end
+end
+local function PlayEmote(name)
+    local h = Humanoid()
+    if not h then return end
+    StopDance()
+    local ok = pcall(function() h:PlayEmote(name) end)
+    if not ok then Notify("Dances", "That emote isn't available for this avatar.") end
+end
+
+-- SERVER HOP
+local HopBusy = false
+local function ServerHop()
+    if HopBusy then return end
+    HopBusy = true
+    Notify("Servers", "Checking public servers...")
+    task.spawn(function()
+        local ok, result = pcall(function()
+            local endpoint = "https://games.roblox.com/v1/games/" .. game.PlaceId
+                .. "/servers/Public?sortOrder=Asc&limit=100"
+            return HttpService:JSONDecode(game:HttpGet(endpoint))
+        end)
+        if not Alive then return end
+        if not ok or type(result) ~= "table" or type(result.data) ~= "table" then
+            HopBusy = false
+            Notify("Servers", "Server list unavailable in this environment.")
+            return
+        end
+        local choices = {}
+        for _, entry in ipairs(result.data) do
+            if type(entry) == "table" and type(entry.id) == "string"
+                and entry.id ~= game.JobId and (entry.playing or 999) < (entry.maxPlayers or 0) then
+                table.insert(choices, entry.id)
+            end
+        end
+        if #choices == 0 then
+            HopBusy = false
+            Notify("Servers", "No different public server found on this page.")
+            return
+        end
+        local target = choices[math.random(1, #choices)]
+        local success, err = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, target, LocalPlayer)
+        end)
+        HopBusy = false
+        if not success then Notify("Servers", "Could not hop: " .. tostring(err):sub(1, 100)) end
+    end)
 end
 
 -- TABS
-local Home = Window:CreateTab({
-    name = "Home",
-    icon = "house",
-})
-
-local Visuals = Window:CreateTab({
-    name = "Visuals",
-    icon = "eye",
-})
-
-local HUDTab = Window:CreateTab({
-    name = "HUD",
-    icon = "monitor",
-})
-
-local Movement = Window:CreateTab({
-    name = "Movement",
-    icon = "zap",
-})
-
-local CameraTab = Window:CreateTab({
-    name = "Camera",
-    icon = "camera",
-})
-
-local Performance = Window:CreateTab({
-    name = "Performance",
-    icon = "cpu",
-})
-
-local World = Window:CreateTab({
-    name = "World",
-    icon = "sun",
-})
-
-local Settings = Window:CreateTab({
-    name = "Settings",
-    icon = "settings",
-})
+local Home = Window:CreateTab({name = "Home"})
+local Visuals = Window:CreateTab({name = "Visuals"})
+local HUDTab = Window:CreateTab({name = "HUD"})
+local Teleports = Window:CreateTab({name = "Teleports"})
+local Movement = Window:CreateTab({name = "Movement"})
+local CameraTab = Window:CreateTab({name = "Camera"})
+local Performance = Window:CreateTab({name = "Performance"})
+local World = Window:CreateTab({name = "World"})
+local MusicTab = Window:CreateTab({name = "Music"})
+local Dances = Window:CreateTab({name = "Dances"})
+local Servers = Window:CreateTab({name = "Servers"})
+local General = Window:CreateTab({name = "Settings"})
 
 -- HOME
-Home:CreateSection("Baba Hub V2")
-
-Home:CreateButton({
-    name = "Welcome",
-    callback = function()
-        Notify(
-            "Baba Hub V2",
-            "Welcome, " .. LocalPlayer.DisplayName .. "!"
-        )
-    end,
-})
-
-Home:CreateButton({
-    name = "Show Player Information",
-    callback = function()
-        Notify(
-            "Player Information",
-            "Username: " .. LocalPlayer.Name ..
-            " | User ID: " .. LocalPlayer.UserId
-        )
-    end,
-})
-
-Home:CreateButton({
-    name = "Show Server Player Count",
-    callback = function()
-        Notify(
-            "Server",
-            tostring(#Players:GetPlayers()) ..
-            " players connected."
-        )
-    end,
-})
-
-Home:CreateButton({
-    name = "Show Session Duration",
-    callback = function()
-        Notify(
-            "Session",
-            FormatTime(os.clock() - StartedAt)
-        )
-    end,
-})
+Home:CreateSection({name = "Welcome"})
+Home:CreateText({name = "Baba Hub V3", text = "MM2 utility hub by LLaliLLama_2. Features are client-side and may be overridden by the game."})
+Home:CreateButton({name = "My Profile", callback = function()
+    Notify("Profile", LocalPlayer.Name .. " | UserId " .. LocalPlayer.UserId)
+end})
+Home:CreateButton({name = "Session Duration", callback = function()
+    Notify("Session", Seconds(os.clock() - StartedAt))
+end})
+Home:CreateButton({name = "Players in Server", callback = function()
+    Notify("Players", #Players:GetPlayers() .. " / " .. Players.MaxPlayers)
+end})
 
 -- VISUALS
-Visuals:CreateSection("Player Highlights")
-
-Visuals:CreateToggle({
-    name = "Role ESP",
-    current = false,
-    flag = "BabaESP",
-    callback = function(Value)
-        Config.ESP = Value
-
-        if Value then
-            RefreshESP()
-        else
-            ClearESP()
-        end
-    end,
-})
-
-Visuals:CreateToggle({
-    name = "Show Player Names",
-    current = true,
-    flag = "BabaNames",
-    callback = function(Value)
-        Config.ESPNames = Value
-        RefreshESP()
-    end,
-})
-
-Visuals:CreateToggle({
-    name = "Show Player Distance",
-    current = true,
-    flag = "BabaDistance",
-    callback = function(Value)
-        Config.ESPDistance = Value
-        RefreshESP()
-    end,
-})
-
-Visuals:CreateSlider({
-    name = "Highlight Transparency",
-    current = 50,
-    range = {0, 100},
-    increment = 5,
-    suffix = "%",
-    flag = "BabaESPAlpha",
-    callback = function(Value)
-        Config.ESPTransparency = Value / 100
-        RefreshESP()
-    end,
-})
-
-Visuals:CreateButton({
-    name = "Refresh All Highlights",
-    callback = function()
-        RefreshESP()
-        Notify("ESP", "Highlights refreshed.")
-    end,
-})
-
-Visuals:CreateSection("Color Information")
-
-Visuals:CreateButton({
-    name = "Show ESP Color Legend",
-    callback = function()
-        Notify(
-            "Role Estimates",
-            "Red: Knife | Blue: Gun | Green: Unknown"
-        )
-    end,
-})
+Visuals:CreateSection({name = "Player ESP"})
+Visuals:CreateToggle({name = "Enable Highlights", value = false, flag = "B3ESP", callback = function(v)
+    Settings.esp = v
+    if v then RefreshESP() else ClearESP() end
+end})
+Visuals:CreateToggle({name = "Names", value = true, flag = "B3Names", callback = function(v)
+    Settings.espNames = v; RefreshESP()
+end})
+Visuals:CreateToggle({name = "Distance", value = true, flag = "B3Distance", callback = function(v)
+    Settings.espDistance = v; RefreshESP()
+end})
+Visuals:CreateSlider({name = "Fill Transparency", range = {0, 100}, increment = 5,
+    value = 55, suffix = "%", flag = "B3ESPAlpha", callback = function(v)
+        Settings.espAlpha = v / 100; RefreshESP()
+    end})
+Visuals:CreateButton({name = "Refresh Players", callback = RefreshESP})
+Visuals:CreateButton({name = "Clear Highlights", callback = function()
+    Settings.esp = false; ClearESP()
+    Notify("ESP", "Highlights cleared. Toggle may need switching off in the menu.")
+end})
 
 -- HUD
-HUDTab:CreateSection("Performance Overlay")
+HUDTab:CreateSection({name = "Draggable Performance Overlay"})
+for _, spec in ipairs({
+    {"FPS Counter", "fps"}, {"Ping", "ping"}, {"Clock", "clock"}, {"Session Timer", "timer"},
+}) do
+    local label, key = spec[1], spec[2]
+    HUDTab:CreateToggle({name = "Show " .. label, value = Settings[key],
+        flag = "B3HUD" .. key, callback = function(v)
+            Settings[key] = v; UpdateHUD()
+        end})
+end
+HUDTab:CreateSlider({name = "HUD Transparency", range = {0, 90}, increment = 5,
+    value = 10, suffix = "%", flag = "B3HUDAlpha", callback = function(v)
+        HUD.BackgroundTransparency = v / 100
+    end})
+HUDTab:CreateButton({name = "Reset HUD Position", callback = function()
+    HUD.Position = UDim2.new(1, -190, 0, 85)
+end})
 
-HUDTab:CreateToggle({
-    name = "Show FPS Counter",
-    current = true,
-    flag = "BabaFPS",
-    callback = function(Value)
-        Config.FPS = Value
-        UpdateHUD()
-    end,
-})
-
-HUDTab:CreateToggle({
-    name = "Show Ping",
-    current = false,
-    flag = "BabaPing",
-    callback = function(Value)
-        Config.Ping = Value
-        UpdateHUD()
-    end,
-})
-
-HUDTab:CreateToggle({
-    name = "Show Clock",
-    current = false,
-    flag = "BabaClock",
-    callback = function(Value)
-        Config.Clock = Value
-        UpdateHUD()
-    end,
-})
-
-HUDTab:CreateToggle({
-    name = "Show Session Timer",
-    current = false,
-    flag = "BabaSession",
-    callback = function(Value)
-        Config.Session = Value
-        UpdateHUD()
-    end,
-})
-
-HUDTab:CreateSection("HUD Customization")
-
-HUDTab:CreateSlider({
-    name = "HUD Transparency",
-    current = 12,
-    range = {0, 100},
-    increment = 5,
-    suffix = "%",
-    flag = "BabaHUDAlpha",
-    callback = function(Value)
-        HUD.BackgroundTransparency = Value / 100
-    end,
-})
-
-HUDTab:CreateButton({
-    name = "Reset HUD Position",
-    callback = function()
-        HUD.Position = UDim2.new(1, -195, 0, 85)
-    end,
-})
+-- TELEPORTS
+Teleports:CreateSection({name = "Teleport to Player"})
+Teleports:CreateInput({name = "Player Username / Display Name", placeholder = "Enter player name",
+    flag = "B3Target", callback = function(v) SelectedPlayerText = tostring(v) end})
+Teleports:CreateButton({name = "Teleport Near Player", callback = function()
+    TeleportNearPlayer(SelectedPlayerText)
+end})
+Teleports:CreateButton({name = "List Player Names", callback = function()
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then table.insert(list, p.Name) end
+    end
+    Notify("Players", (#list > 0 and table.concat(list, ", ") or "Nobody else here"):sub(1, 250))
+end})
+Teleports:CreateSection({name = "Click Teleport"})
+Teleports:CreateToggle({name = "Shift + Click Teleport", value = false,
+    flag = "B3ShiftClick", callback = function(v) Settings.shiftClick = v end})
+Teleports:CreateText({text = "Hold Left Shift and left-click the world to move to that point. Disable before using normal controls if needed."})
 
 -- MOVEMENT
-Movement:CreateSection("Movement Controls")
-
-Movement:CreateSlider({
-    name = "WalkSpeed",
-    current = 16,
-    range = {10, 50},
-    increment = 1,
-    suffix = "Speed",
-    flag = "BabaSpeed",
-    callback = function(Value)
-        Config.WalkSpeed = Value
-        ApplyMovement()
-    end,
-})
-
-Movement:CreateSlider({
-    name = "Jump Power",
-    current = 50,
-    range = {25, 100},
-    increment = 5,
-    suffix = "Power",
-    flag = "BabaJump",
-    callback = function(Value)
-        Config.JumpPower = Value
-        ApplyMovement()
-    end,
-})
-
-Movement:CreateButton({
-    name = "Reset Movement",
-    callback = function()
-        Config.WalkSpeed = Original.WalkSpeed
-        Config.JumpPower = Original.JumpPower
-        ApplyMovement()
-        Notify("Movement", "Movement restored.")
-    end,
-})
+Movement:CreateSection({name = "Character Settings"})
+Movement:CreateSlider({name = "WalkSpeed", range = {10, 50}, increment = 1,
+    value = 16, flag = "B3Walk", callback = function(v) Settings.speed = v; ApplyMovement() end})
+Movement:CreateSlider({name = "Jump Power", range = {25, 100}, increment = 5,
+    value = 50, flag = "B3Jump", callback = function(v) Settings.jump = v; ApplyMovement() end})
+Movement:CreateButton({name = "Reset Movement", callback = function()
+    Settings.speed, Settings.jump = 16, 50
+    ApplyMovement(); Notify("Movement", "Speed and jump reset; sliders may retain their previous display.")
+end})
 
 -- CAMERA
-CameraTab:CreateSection("Camera Controls")
-
-CameraTab:CreateSlider({
-    name = "Field of View",
-    current = 70,
-    range = {40, 120},
-    increment = 5,
-    suffix = "FOV",
-    flag = "BabaFOV",
-    callback = function(Value)
-        Config.FOV = Value
-        ApplyCamera()
-    end,
-})
-
-CameraTab:CreateSlider({
-    name = "Maximum Camera Zoom",
-    current = 20,
-    range = {1, 100},
-    increment = 1,
-    suffix = "Studs",
-    flag = "BabaZoom",
-    callback = function(Value)
-        Config.Zoom = Value
-        ApplyCamera()
-    end,
-})
-
-CameraTab:CreateButton({
-    name = "Enable First Person",
-    callback = function()
-        LocalPlayer.CameraMode =
-            Enum.CameraMode.LockFirstPerson
-    end,
-})
-
-CameraTab:CreateButton({
-    name = "Enable Third Person",
-    callback = function()
-        LocalPlayer.CameraMode =
-            Enum.CameraMode.Classic
-    end,
-})
-
-CameraTab:CreateButton({
-    name = "Reset Camera",
-    callback = function()
-        Config.FOV = Original.FOV
-        Config.Zoom = Original.Zoom
-        LocalPlayer.CameraMode = Original.CameraMode
-        ApplyCamera()
-    end,
-})
+CameraTab:CreateSection({name = "View Settings"})
+CameraTab:CreateSlider({name = "Field of View", range = {40, 120}, increment = 2,
+    value = Original.fov, flag = "B3FOV", callback = function(v) Settings.fov = v; ApplyCamera() end})
+CameraTab:CreateSlider({name = "Maximum Zoom", range = {5, 100}, increment = 1,
+    value = 20, flag = "B3Zoom", callback = function(v) Settings.zoom = v; ApplyCamera() end})
+CameraTab:CreateButton({name = "First Person", callback = function()
+    LocalPlayer.CameraMode = Enum.CameraMode.LockFirstPerson
+end})
+CameraTab:CreateButton({name = "Third Person", callback = function()
+    LocalPlayer.CameraMode = Enum.CameraMode.Classic
+end})
+CameraTab:CreateButton({name = "Reset Camera", callback = function()
+    Settings.fov, Settings.zoom = Original.fov, Original.zoom
+    LocalPlayer.CameraMode = Original.cameraMode
+    ApplyCamera()
+end})
 
 -- PERFORMANCE
-Performance:CreateSection("Graphics Optimization")
-
-Performance:CreateToggle({
-    name = "Low Graphics Mode",
-    current = false,
-    flag = "BabaLowGraphics",
-    callback = function(Value)
-        if Config.LowGraphics == Value then return end
-        Config.LowGraphics = Value
-        SetLowGraphics(Value)
-    end,
-})
-
-Performance:CreateButton({
-    name = "Show Current FPS",
-    callback = function()
-        Notify(
-            "Performance",
-            "Current FPS: " .. FPS
-        )
-    end,
-})
-
-Performance:CreateButton({
-    name = "Show Current Ping",
-    callback = function()
-        local Ping = "Unavailable"
-
-        pcall(function()
-            Ping = Stats.Network.ServerStatsItem[
-                "Data Ping"
-            ]:GetValueString()
-        end)
-
-        Notify("Network", "Ping: " .. Ping)
-    end,
-})
+Performance:CreateSection({name = "Local Graphics"})
+Performance:CreateToggle({name = "Low Graphics Mode", value = false,
+    flag = "B3LowGraphics", callback = function(v)
+        Settings.lowGraphics = v; SetLowGraphics(v)
+    end})
+Performance:CreateButton({name = "Check FPS", callback = function()
+    Notify("FPS", tostring(FPS))
+end})
+Performance:CreateButton({name = "Restore Graphics", callback = function()
+    Settings.lowGraphics = false; SetLowGraphics(false)
+    Notify("Graphics", "Available materials restored.")
+end})
 
 -- WORLD
-World:CreateSection("Lighting Presets")
+World:CreateSection({name = "Local Lighting Presets"})
+World:CreateButton({name = "Daylight", callback = function()
+    Lighting.ClockTime, Lighting.Brightness = 12, 2
+end})
+World:CreateButton({name = "Sunset", callback = function()
+    Lighting.ClockTime, Lighting.Brightness = 18, 2
+end})
+World:CreateButton({name = "Night", callback = function()
+    Lighting.ClockTime, Lighting.Brightness = 0, 1
+end})
+World:CreateButton({name = "Bright Ambient", callback = function()
+    Lighting.Ambient = Color3.fromRGB(195, 195, 195)
+    Lighting.OutdoorAmbient = Color3.fromRGB(195, 195, 195)
+    Lighting.Brightness = 4
+end})
+World:CreateButton({name = "Remove Local Fog", callback = function()
+    Lighting.FogEnd = 100000
+end})
+World:CreateButton({name = "Restore Lighting", callback = RestoreLighting})
 
-World:CreateButton({
-    name = "Daylight",
-    callback = function()
-        Lighting.ClockTime = 12
-        Lighting.Brightness = 2
-    end,
-})
+-- MUSIC
+MusicTab:CreateSection({name = "Now Playing"})
+MusicStatus = MusicTab:CreateText({name = "Selected Song", text = "Nothing selected"})
+MusicTab:CreateButton({name = "Play Selected", callback = function()
+    PlayIndex(CurrentSong)
+end})
+MusicTab:CreateButton({name = "Pause", callback = function() Music:Pause() end})
+MusicTab:CreateButton({name = "Resume", callback = function() Music:Resume() end})
+MusicTab:CreateButton({name = "Stop", callback = function() Music:Stop() end})
+MusicTab:CreateButton({name = "Previous", callback = function() PlayAdjacent(-1) end})
+MusicTab:CreateButton({name = "Next", callback = function() PlayAdjacent(1) end})
+MusicTab:CreateSlider({name = "Volume", range = {0, 100}, increment = 5,
+    value = math.floor(Settings.volume * 100 + 0.5), suffix = "%",
+    flag = "B3MusicVolume", callback = function(v)
+        Settings.volume = v / 100; Music.Volume = Settings.volume; SaveLibrary()
+    end})
+MusicTab:CreateToggle({name = "Loop Song", value = Settings.loop,
+    flag = "B3MusicLoop", callback = function(v)
+        Settings.loop = v; Music.Looped = v; SaveLibrary()
+    end})
+MusicTab:CreateToggle({name = "Auto-play Next Track", value = Settings.autoNext,
+    flag = "B3MusicAutoNext", callback = function(v)
+        Settings.autoNext = v; SaveLibrary()
+    end})
+MusicTab:CreateSection({name = "My Library"})
+MusicTab:CreateInput({name = "Roblox Audio ID", placeholder = "Numbers only",
+    flag = "B3AudioID", callback = function(v) AudioInput = tostring(v) end})
+MusicTab:CreateInput({name = "Track Name", placeholder = "A name for this track",
+    flag = "B3AudioName", callback = function(v) SongNameInput = tostring(v) end})
+MusicTab:CreateButton({name = "Add Track to Library", callback = function()
+    AddSong(AudioInput, SongNameInput)
+    RenderSongRows()
+end})
+MusicTab:CreateButton({name = "Open / Close Library Browser", callback = ShowMusicLibrary})
+MusicTab:CreateButton({name = "Toggle Favorite on Selected", callback = function()
+    local entry = CurrentSong and Library[CurrentSong]
+    if not entry then Notify("Music", "Select a track first."); return end
+    entry.favorite = not entry.favorite
+    SaveLibrary(); UpdateMusicInfo(); RenderSongRows()
+end})
+MusicTab:CreateButton({name = "Remove Selected Track", callback = function()
+    if not CurrentSong or not Library[CurrentSong] then return end
+    Music:Stop()
+    table.remove(Library, CurrentSong)
+    CurrentSong = #Library > 0 and math.min(CurrentSong, #Library) or nil
+    SaveLibrary(); UpdateMusicInfo(); RenderSongRows()
+end})
+LibraryStatus = MusicTab:CreateText({name = "Saved Songs", text = tostring(#Library) .. " saved tracks"})
+MusicTab:CreateText({text = "Roblox audio assets must be accessible to the experience. Arbitrary SoundCloud links cannot be played as Roblox SoundIds. Music is client-side; saving requires readfile/writefile support."})
 
-World:CreateButton({
-    name = "Night Mode",
-    callback = function()
-        Lighting.ClockTime = 0
-        Lighting.Brightness = 1
-    end,
-})
+-- DANCES
+Dances:CreateSection({name = "Avatar Emotes"})
+for _, emote in ipairs({"dance", "dance2", "dance3", "wave", "cheer", "point"}) do
+    local name = emote
+    Dances:CreateButton({name = "Play " .. name, callback = function()
+        PlayEmote(name)
+    end})
+end
+Dances:CreateSection({name = "Custom Roblox Animation"})
+Dances:CreateInput({name = "Animation Asset ID", placeholder = "Numeric animation ID",
+    flag = "B3DanceID", callback = function(v) DanceInput = tostring(v) end})
+Dances:CreateButton({name = "Play Custom Animation", callback = function()
+    PlayDanceId(DanceInput)
+end})
+Dances:CreateButton({name = "Stop Custom Animation", callback = StopDance})
+Dances:CreateSlider({name = "Dance Speed", range = {25, 200}, increment = 5,
+    value = 100, suffix = "%", flag = "B3DanceSpeed", callback = function(v)
+        Settings.danceSpeed = v / 100
+        if DanceTrack then DanceTrack:AdjustSpeed(Settings.danceSpeed) end
+    end})
+Dances:CreateToggle({name = "Loop Dance", value = true, flag = "B3DanceLoop",
+    callback = function(v)
+        Settings.danceLoop = v
+        if DanceTrack then DanceTrack.Looped = v end
+    end})
+Dances:CreateText({text = "Custom animations must be available to the avatar/experience. Some emotes may not be playable in MM2."})
 
-World:CreateButton({
-    name = "Sunset",
-    callback = function()
-        Lighting.ClockTime = 18
-        Lighting.Brightness = 2
-    end,
-})
+-- SERVERS
+Servers:CreateSection({name = "Server Management"})
+Servers:CreateText({name = "Current Job ID", text = game.JobId})
+Servers:CreateButton({name = "Copy Server ID", callback = function()
+    if type(setclipboard) == "function" then
+        setclipboard(game.JobId)
+        Notify("Servers", "Copied server ID.")
+    else
+        Notify("Servers", "Clipboard access unavailable.")
+    end
+end})
+Servers:CreateButton({name = "Find a Different Public Server", callback = ServerHop})
+Servers:CreateButton({name = "Rejoin This Place", callback = function()
+    local ok, err = pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
+    if not ok then Notify("Servers", "Rejoin failed: " .. tostring(err)) end
+end})
+Servers:CreateText({text = "Server hopping requires access to Roblox public-server listings and working teleport permissions. It does not guarantee an empty or low-latency server."})
 
-World:CreateButton({
-    name = "Bright Mode",
-    callback = function()
-        Lighting.Brightness = 5
-        Lighting.Ambient = Color3.fromRGB(200, 200, 200)
-        Lighting.OutdoorAmbient =
-            Color3.fromRGB(200, 200, 200)
-    end,
-})
-
-World:CreateButton({
-    name = "Remove Local Fog",
-    callback = function()
-        Lighting.FogEnd = 100000
-    end,
-})
-
-World:CreateButton({
-    name = "Restore Original Lighting",
-    callback = function()
-        RestoreLighting()
-    end,
-})
-
--- CLEANUP
-local function Cleanup()
-    if not Running then return end
-    Running = false
-
-    Config.ESP = false
+-- SETTINGS + CLEANUP
+local function Unload()
+    if not Alive then return end
+    Alive = false
     ClearESP()
-
-    if Config.LowGraphics then
-        Config.LowGraphics = false
-        SetLowGraphics(false)
-    end
-
+    StopDance()
+    Music:Stop()
+    Music:Destroy()
+    Settings.shiftClick = false
+    if Settings.lowGraphics then SetLowGraphics(false) end
     RestoreLighting()
-
-    Config.WalkSpeed = Original.WalkSpeed
-    Config.JumpPower = Original.JumpPower
-    Config.FOV = Original.FOV
-    Config.Zoom = Original.Zoom
-
-    ApplyMovement()
-    ApplyCamera()
-
-    LocalPlayer.CameraMode = Original.CameraMode
-
-    for _, Connection in ipairs(Connections) do
-        Connection:Disconnect()
+    if OriginalHumanoid and OriginalHumanoid.Parent then
+        pcall(function()
+            OriginalHumanoid.h.WalkSpeed = OriginalHumanoid.speed
+            OriginalHumanoid.h.UseJumpPower = OriginalHumanoid.useJumpPower
+            OriginalHumanoid.h.JumpPower = OriginalHumanoid.jump
+        end)
     end
-
+    Settings.fov, Settings.zoom = Original.fov, Original.zoom
+    ApplyCamera()
+    LocalPlayer.CameraMode = Original.cameraMode
+    for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
     table.clear(Connections)
+    ScreenGui:Destroy()
+    if Shared.BabaHubV3Unload == Unload then Shared.BabaHubV3Unload = nil end
+    -- Close Rayfield if the installed Gen2 version exposes a destroy method.
+    pcall(function() if type(Window.Destroy) == "function" then Window:Destroy() end end)
+end
+Shared.BabaHubV3Unload = Unload
+General:CreateSection({name = "Baba Hub Controls"})
+General:CreateButton({name = "Stop All Music and Dances", callback = function()
+    Music:Stop(); StopDance(); Notify("Settings", "Playback stopped.")
+end})
+General:CreateButton({name = "Restore Default Movement and Camera", callback = function()
+    Settings.speed, Settings.jump = 16, 50
+    Settings.fov, Settings.zoom = Original.fov, Original.zoom
+    ApplyMovement(); ApplyCamera()
+    Notify("Settings", "Movement and camera restored.")
+end})
+General:CreateButton({name = "Unload Baba Hub V3", callback = Unload})
+General:CreateText({text = "Your music library is stored locally where file APIs exist. The other controls reset when the script reloads. The menu may remain if your Rayfield build lacks Window:Destroy()."})
 
-    if GUI then
-        GUI:Destroy()
+-- RUNTIME CONNECTIONS
+Connect(Players.PlayerRemoving, function(p) RemoveESP(p) end)
+Connect(LocalPlayer.CharacterAdded, function(character)
+    StopDance()
+    task.wait(0.5)
+    if Alive then
+        local h = character:FindFirstChildOfClass("Humanoid")
+        if h then
+            OriginalHumanoid = {
+                h = h, speed = h.WalkSpeed, jump = h.JumpPower, useJumpPower = h.UseJumpPower,
+            }
+        end
+        ApplyMovement()
+        ApplyCamera()
+    end
+end)
+
+-- Capture original humanoid settings before our first modification.
+do
+    local h = Humanoid()
+    if h then
+        OriginalHumanoid = {
+            h = h, speed = h.WalkSpeed, jump = h.JumpPower, useJumpPower = h.UseJumpPower,
+        }
     end
 end
 
-getgenv().BabaHubCleanup = Cleanup
-
-Track(Players.PlayerRemoving:Connect(function(Player)
-    RemoveESP(Player)
-end))
-
-Track(LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(0.4)
-
-    if Running then
-        ApplyMovement()
-        ApplyCamera()
+Connect(UserInputService.InputBegan, function(input, processed)
+    if not Alive or processed or not Settings.shiftClick then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+    if not (UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+        or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)) then return end
+    local mouse = LocalPlayer:GetMouse()
+    if mouse and mouse.Target then
+        TeleportAt(mouse.Hit.Position)
     end
-end))
+end)
 
--- SETTINGS
-Settings:CreateSection("General Controls")
+local frames, frameElapsed, HUDTick, ESPTick = 0, 0, 0, 0
+Connect(RunService.RenderStepped, function(dt)
+    if not Alive then return end
+    frames = frames + 1
+    frameElapsed = frameElapsed + dt
+    HUDTick = HUDTick + dt
+    ESPTick = ESPTick + dt
+    if frameElapsed >= 0.5 then
+        FPS = math.floor(frames / frameElapsed + 0.5)
+        frames, frameElapsed = 0, 0
+    end
+    if HUDTick >= 0.5 then
+        HUDTick = 0
+        UpdateHUD()
+    end
+    if ESPTick >= 0.5 then
+        ESPTick = 0
+        if Settings.esp then RefreshESP() end
+    end
+end)
 
-Settings:CreateButton({
-    name = "Disable ESP",
-    callback = function()
-        Config.ESP = false
-        ClearESP()
-        Notify("Settings", "ESP disabled.")
-    end,
-})
-
-Settings:CreateButton({
-    name = "Restore Graphics and Lighting",
-    callback = function()
-        if Config.LowGraphics then
-            Config.LowGraphics = false
-            SetLowGraphics(false)
-        end
-
-        RestoreLighting()
-        Notify("Settings", "Visual settings restored.")
-    end,
-})
-
-Settings:CreateButton({
-    name = "Unload Baba Hub Features",
-    callback = function()
-        Cleanup()
-    end,
-})
-
--- INITIALIZE
 UpdateHUD()
-
-Notify(
-    "Baba Hub V2",
-    "Loaded successfully! Enjoy the new features."
-)
-
+UpdateMusicInfo()
+Notify("Baba Hub V3", "Loaded: HUD, visuals, teleport, music, dances, and more.")
